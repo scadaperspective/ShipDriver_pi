@@ -1,0 +1,254 @@
+{\rtf1\ansi\ansicpg1252\cocoartf1671\cocoasubrtf200
+{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww27800\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 /**\
+ * Porting a GPS simulator module  into Ship Driver  macOS version  Ron Southworth \
+ *\
+\
+import java.util.Calendar;  // Source equivalents in C++\
+import java.util.TimeZone;\
+\
+/**\
+ *\
+ */\
+public class GPSSimulator extends Thread \{\
+\
+	/**\
+	 * \
+	 */\
+	private NMEAserver nmeaServer = new NMEAserver();\
+	private CompassDeviation compassDeviation;\
+	private CompassDeclination compassDeclination;\
+	private double trueWindSpeed;\
+	private double trueWindDirection;\
+	private double trueWindAngle ;\
+	private double apparentWindSpeed;\
+	private double apparentWindAngle;\
+	private double boatSpeed;\
+	private double headingTrue;\
+	private double headingMagnetic;\
+	private double latitude;\
+	private double longitude;\
+\
+	/**\
+	 * Method for calculating the checksums of NMEA 0183 sentences. \
+	 * XOR every byte starting from the second (the one after the "$")  - take\
+	 * the second byte, XOR with third, then XOR the result with fourth and so\
+	 * on until done. Return the two-digit hex value of the checksum.\
+	 */\
+	public static String getNMEAChecksum(String sentence) \{\
+		byte[] byteArray = sentence.getBytes();\
+		byte cksum = byteArray[1];\
+		for (int i = 2; i < byteArray.length; i++) \{\
+			cksum = (byte) (cksum ^ byteArray[i]);\
+		\}\
+		return String.format("%02X", cksum);\
+	\}\
+\
+	/**\
+	 * Convert lat/long from decimal degrees to the format expected in NMWEA\
+	 * 0183 sentences. We calculated to four decimal places.... More req ???  \
+	 */\
+	public static String decimalToGPS(double L) \{\
+		return String.format("%.4f", ((int) Math.abs(L) * 100) + ((Math.abs(L) - (int) Math.abs(L)) * 60));\
+	\}\
+\
+	public void setWind(double s, double d) \{\
+		trueWindSpeed = s;\
+		trueWindDirection = d;\
+	\}\
+\
+	public double getTrueWindSpeed() \{\
+		return trueWindSpeed;\
+	\}\
+\
+	public double getTrueWindAngle() \{\
+		if (trueWindAngle < 180) \{\
+			return trueWindAngle;\
+		\} else \{\
+			return trueWindAngle-360 ;\
+		\}\
+	\}\
+\
+	public double getApparentWindSpeed() \{\
+		return apparentWindSpeed;\
+	\}\
+\
+	public double getApparentWindAngle() \{\
+		if (apparentWindAngle < 180) \{\
+		return apparentWindAngle;\
+		\} else \{\
+			return apparentWindAngle-360 ;\
+		\}\
+	\}\
+\
+	public void setBoatSpeed(double b) \{\
+		boatSpeed = b;\
+	\}\
+\
+	public void setHeading(double h) \{\
+		headingTrue = h;\
+	\}\
+\
+	public void setLatitude(double lat) \{\
+		latitude = lat;\
+	\}\
+\
+	public void setLongitude(double lon) \{\
+		longitude = lon;\
+	\}\
+\
+	public double getHeadingMagnetic() \{\
+		return headingMagnetic;\
+	\}\
+\
+	public GPSSimulator() \{\
+		nmeaServer.start();\
+		compassDeviation = new CompassDeviation();\
+		compassDeclination = new CompassDeclination();\
+	\}\
+\
+	@Override\
+	public void run() \{\
+		while (true) \{\
+			headingMagnetic = headingTrue + compassDeclination.FindDeclination(latitude, longitude) + compassDeviation.FindDeviation(headingTrue);\
+			/**\
+			 * Generate the fake "Satellites in View" sentences (GPGSV)\
+			 * Satellites 16, 18, 22 and 24 will appear to be OK (non-zero dB\
+			 * SNR) The rest (03, 04, 06, 13,14, 19, 27) will not (dB SNR value\
+			 * is zero)\
+			 */\
+			nmeaServer.sendMessage("$GPGSV,3,1,11,03,03,111,00,04,15,270,00,06,01,010,00,13,06,292,00*74" + "\\r\\n");\
+			nmeaServer.sendMessage("$GPGSV,3,2,11,14,25,170,00,16,57,208,39,18,67,296,40,19,40,246,00*74" + "\\r\\n");\
+			nmeaServer.sendMessage("$GPGSV,3,3,11,22,42,067,42,24,14,311,43,27,05,244,00,,,,*4D" + "\\r\\n");\
+			/**\
+			 * Do a $GPGLL sentence which basically gives you Lat/Long and UTC time\
+			 */\
+			String sentence = "$GPGLL," + decimalToGPS(latitude);\
+			if (latitude > 0) \{\
+				sentence = sentence + ",N";\
+			\} else \{\
+				sentence = sentence + ",S";\
+			\}\
+			sentence = sentence + "," + decimalToGPS(longitude);\
+			if (longitude > 0) \{\
+				sentence = sentence + ",E";\
+			\} else \{\
+				sentence = sentence + ",W";\
+			\}\
+			Calendar c = Calendar.getInstance(TimeZone.getTimeZone("UTC"));\
+			sentence = sentence + "," + String.format("%tH%tM%tS", c, c, c) + ",A";\
+			nmeaServer.sendMessage(sentence + "*" + getNMEAChecksum(sentence) + "\\r\\n");\
+			/**\
+			 * Do a $GPGGA sentence\
+			 */\
+			sentence = "$GPGGA," + String.format("%tH%tM%tS", c, c, c) + "," + decimalToGPS(latitude);\
+			if (latitude > 0) \{\
+				sentence = sentence + ",N";\
+			\} else \{\
+				sentence = sentence + ",S";\
+			\}\
+			sentence = sentence + "," + decimalToGPS(longitude);\
+			if (longitude > 0) \{\
+				sentence = sentence + ",E";\
+			\} else \{\
+				sentence = sentence + ",W";\
+			\}\
+			sentence = sentence + ",1,12,1.5,0.0,M,0.0,M,";\
+			nmeaServer.sendMessage(sentence + "*" + getNMEAChecksum(sentence) + "\\r\\n");\
+			/**\
+			 * Do a $GPVTG sentence, \
+			 * Using heading and vessel speed here \
+			 * Called by the sentence. Leeway\
+			 * and set and drift included in the simulation\
+			 * includes vessel speed and heading with SOG and COG\
+			 * Check it is calculating values as a vector sum\
+			 * \
+			 */\
+			sentence = "$GPVTG," + String.format("%3.1f", headingTrue) + ",T," + String.format("%3.1f", headingMagnetic) + ",M" + String.format("%3.1f", boatSpeed) + ",N," + String.format("%3.1f", boatSpeed * 1.852) + ",K";\
+			nmeaServer.sendMessage(sentence + "*" + getNMEAChecksum(sentence) + "\\r\\n");\
+			/**\
+			 * Do a $GPHDT sentence, also very easy. Simply the True Heading\
+			 */\
+			sentence = "$HCHDT," + String.format("%3.1f", headingTrue) + ",T";\
+			nmeaServer.sendMessage(sentence + "*" + getNMEAChecksum(sentence) + "\\r\\n");\
+			/**\
+			 * Do a $GPHDM sentence, just the Magnetic Heading.\
+			 */\
+			sentence = "$HCHDM," + String.format("%3.1f", headingMagnetic) + ",M";\
+			nmeaServer.sendMessage(sentence + "*" + getNMEAChecksum(sentence) + "\\r\\n");\
+			/**\
+			 * Generate a $IIMWV sentence with True Wind data in it. Note that\
+			 * the direction is RELATIVE TO THE Vessel (0-360) so we have to\
+			 * convert by subtracting vessel true heading from wind true direction\
+			 * and fixing any wrap around at 0 degrees.\
+			 */\
+			double r = trueWindDirection - headingTrue;\
+			if (r < 0) \{\
+				r = r + 360;\
+			\}\
+			sentence = "$IIMWV," + String.format("%3.0f", r) + ",T," + String.format("%2.1f", trueWindSpeed) + ",N,A";\
+			nmeaServer.sendMessage(sentence + "*" + getNMEAChecksum(sentence) + "\\r\\n");\
+			/**\
+			 * And now for something a little different. Calculate AWS and AWA\
+			 * from TWS, TWA and vessel peed AWS = SQRT(TWS^2 + BS^2 +\
+			 * 2*TWS*BS*COS(TWA from bow)) AWA = ARCCOS( (TWS * COS(TWA from\
+			 * bow) + BS) / (AWS) )\
+			 * \
+			 * First get TWA between 0 and 180\
+			 */\
+			trueWindAngle = r;\
+			if (r > 180) \{\
+				trueWindAngle = r - 360 ;\
+			\}\
+			/**\
+			 * Calculate AWS and AWA in the normal way. If the TWA was > 180\
+			 * then we have to convert AWA so it's on the "correct" side. It\
+			 * will always appear to be on the starboard side.\
+			 * \
+			 * The generate $IIMWV sentence but with RELATIVE (to the vessel) wind\
+			 * data.\
+			 */\
+			apparentWindSpeed = Math.sqrt(trueWindSpeed * trueWindSpeed + boatSpeed * boatSpeed + 2 * trueWindSpeed * boatSpeed * Math.cos(Math.toRadians(trueWindAngle)));\
+			apparentWindAngle = Math.toDegrees(Math.acos((trueWindSpeed * Math.cos(Math.toRadians(trueWindAngle)) + boatSpeed) / apparentWindSpeed));\
+			if (r > 180) \{\
+				apparentWindAngle = 360 - apparentWindAngle;\
+			\}\
+			sentence = "$IIMWV," + String.format("%3.0f", apparentWindAngle) + ",R," + String.format("%2.1f", apparentWindSpeed) + ",N,A";\
+			nmeaServer.sendMessage(sentence + "*" + getNMEAChecksum(sentence) + "\\r\\n");\
+			/**\
+			 * $GPRMC should also have SOG AND COG rather than simply vessel speed and heading\
+			 * as we have done here. Once the simulation is giving us set and drift we can do \
+			 * the math and change this to include SOG and COG instead\
+			 * @TODO: change this to include COG and SOG once we have set and drift data\
+			 */\
+			sentence = "$GPRMC," + String.format("%tH%tM%tS", c, c, c) + ",A," + decimalToGPS(latitude);\
+			if (latitude > 0) \{\
+				sentence = sentence + ",N";\
+			\} else \{\
+				sentence = sentence + ",S";\
+			\}\
+			sentence = sentence + "," + decimalToGPS(longitude);\
+			if (longitude > 0) \{\
+				sentence = sentence + ",E";\
+			\} else \{\
+				sentence = sentence + ",W";\
+			\}\
+			sentence = sentence + "," + String.format("%3.1f", boatSpeed) + "," + String.format("%3.1f", headingTrue) + "," + String.format("%td%tm%ty", c, c, c) + "," + String.format("%3.1f", compassDeclination.FindDeclination(latitude, longitude));\
+			if (compassDeclination.FindDeclination(latitude, longitude) > 0) \{\
+				sentence = sentence + ",E";\
+			\} else \{\
+				sentence = sentence + ",W";\
+			\}\
+			nmeaServer.sendMessage(sentence + "*" + getNMEAChecksum(sentence) + "\\r\\n");\
+			try \{\
+				Thread.sleep(1000);\
+			\} catch (InterruptedException e) \{\
+			\}\
+		\}\
+	\}\
+\}}
